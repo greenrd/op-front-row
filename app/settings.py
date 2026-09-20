@@ -73,7 +73,9 @@ def save_settings(settings: Settings) -> None:
 def apply_update(settings: Settings, update: SettingsUpdate) -> Settings:
     data = settings.model_dump()
     for key, value in update.model_dump(exclude_none=True).items():
-        if isinstance(value, str) and "*" in value and key in ("llm_api_key", "ig_app_secret", "ig_access_token"):
-            continue  # masked value echoed back from the UI; keep the stored secret
+        if key in ("llm_api_key", "ig_app_secret", "ig_access_token"):
+            value = value.strip()
+            if not value or "*" in value:
+                continue  # left blank or masked value echoed back from the UI; keep the stored secret
         data[key] = value
     return Settings.model_validate(data)

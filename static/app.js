@@ -242,7 +242,7 @@ async function renderSettings(params) {
     <form id="llm-form" class="card">
       <h2 style="margin-top:0">LLM (OpenAI-compatible)</h2>
       <label class="field"><span>Endpoint base URL</span><input name="llm_base_url" placeholder="https://api.openai.com/v1" value="${esc(s.llm_base_url)}" /></label>
-      <label class="field"><span>API key</span><input name="llm_api_key" type="password" placeholder="sk-…" value="${esc(s.llm_api_key)}" /></label>
+      <label class="field"><span>API key</span><input name="llm_api_key" type="password" placeholder="${s.llm_api_key ? 'stored (' + esc(s.llm_api_key) + ') – paste to replace' : 'sk-…'}" autocomplete="off" /></label>
       <label class="field"><span>Model</span><input name="llm_model" placeholder="gpt-4o-mini" value="${esc(s.llm_model)}" /></label>
       <div class="row"><button class="primary" type="submit">Save LLM settings</button><span id="llm-msg" class="count">${s.llm_configured ? '<span class="ok">Configured</span>' : '<span class="err">Not configured – required for Summarise</span>'}</span></div>
     </form>
@@ -253,11 +253,11 @@ async function renderSettings(params) {
       <h3>Option A – Log in with Instagram</h3>
       <p class="help">Create a Meta app with the <em>Instagram API with Instagram Login</em> product, add <code>&lt;public base URL&gt;/api/instagram/callback</code> as a valid OAuth redirect URI, and make sure your account is an Instagram Professional (Business/Creator) account.</p>
       <label class="field"><span>Instagram App ID</span><input name="ig_app_id" value="${esc(s.ig_app_id)}" /></label>
-      <label class="field"><span>Instagram App Secret</span><input name="ig_app_secret" type="password" value="${esc(s.ig_app_secret)}" /></label>
+      <label class="field"><span>Instagram App Secret</span><input name="ig_app_secret" type="password" placeholder="${s.ig_app_secret ? 'stored (' + esc(s.ig_app_secret) + ') – paste to replace' : ''}" autocomplete="off" /></label>
       <label class="field"><span>Public base URL of this app (https, e.g. your ngrok URL)</span><input name="public_base_url" placeholder="https://xxxx.ngrok.app" value="${esc(s.public_base_url)}" /></label>
       <h3>Option B – Paste an access token</h3>
       <p class="help">Preferred: an Instagram Login token (starts with <code>IGAA</code>) from the app dashboard → Instagram → <em>API setup with Instagram login</em> → Generate token, with <code>instagram_business_basic</code> and <code>instagram_business_manage_messages</code>. A Facebook token (starts with <code>EAA</code>, scopes <code>instagram_basic</code>/<code>instagram_manage_messages</code>) also works if it can access a Facebook Page linked to the Instagram account.</p>
-      <label class="field"><span>Access token</span><input name="ig_access_token" type="password" value="${esc(s.ig_access_token)}" /></label>
+      <label class="field"><span>Access token</span><input name="ig_access_token" type="password" placeholder="${s.ig_access_token ? 'stored (' + esc(s.ig_access_token) + ') – paste to replace' : 'IGAA… or EAA…'}" autocomplete="off" /></label>
       <div class="row">
         <button class="primary" type="submit">Save Instagram settings</button>
         <a href="/api/instagram/login" id="ig-login"><button type="button" ${canOAuth ? '' : 'disabled title="Save App ID, App Secret and Public base URL first"'}>Log in with Instagram</button></a>
@@ -303,8 +303,11 @@ async function renderSettings(params) {
   document.getElementById('ig-form').onsubmit = async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
+    const token = fd.get('ig_access_token').trim();
     await saveSettings(Object.fromEntries(fd.entries()));
-    document.getElementById('ig-msg').textContent = 'Saved';
+    document.getElementById('ig-msg').textContent = token
+      ? `Saved – new token stored (${state.settings.ig_access_token})`
+      : 'Saved (token unchanged)';
   };
   document.getElementById('ig-verify').onclick = async () => {
     const msg = document.getElementById('ig-msg');
