@@ -31,6 +31,12 @@ Everything is entered in the Settings page and stored in `data/settings.json` (g
 * *Paste an access token* with the `instagram_business_basic` and `instagram_business_manage_messages`
   scopes (e.g. generated from the Meta app dashboard).
 
+**Import DMs (no API)** – if Meta's Conversations API returns nothing for your account (e.g. the app is
+still in Development mode), upload an Instagram *Download your information* export (Settings → Your
+activity → Download your information → Messages, **JSON** format; zip or a single `message_1.json`),
+or paste messages as `@username: text` lines with a blank line between threads. Imported threads go
+through the same 7-day filter, checkboxes and summariser.
+
 **Demo mode** – uses built-in sample threads so you can try the summariser without Instagram.
 
 ## How it works

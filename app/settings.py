@@ -21,6 +21,7 @@ class Settings(BaseModel):
 
     public_base_url: str = ""
     demo_mode: bool = False
+    import_mode: bool = False
 
     def llm_configured(self) -> bool:
         return bool(self.llm_base_url.strip() and self.llm_api_key.strip())
@@ -47,6 +48,7 @@ class SettingsUpdate(BaseModel):
     ig_access_token: str | None = None
     public_base_url: str | None = None
     demo_mode: bool | None = None
+    import_mode: bool | None = None
 
 
 def _mask(value: str) -> str:

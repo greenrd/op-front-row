@@ -55,6 +55,7 @@ async function loadStatus() {
   state.status = await api('/api/status');
   const acct = document.getElementById('account');
   if (state.status.demo_mode) acct.textContent = 'Demo data';
+  else if (state.status.import_mode) acct.textContent = 'Imported DMs' + (state.status.ig_username ? ' · @' + state.status.ig_username : '');
   else if (state.status.instagram_configured) acct.textContent = state.status.ig_username ? '@' + state.status.ig_username : 'Instagram connected';
   else acct.textContent = 'Instagram not connected';
 }
@@ -110,7 +111,7 @@ function renderInbox(params) {
       <button id="reload">Reload</button>
       <button id="select-all" class="link">Select all</button>
       <button id="select-none" class="link">Select none</button>
-      <span class="count">${selectedCount} of ${total} messages selected${state.source === 'demo' ? ' · demo data' : ''}</span>
+      <span class="count">${selectedCount} of ${total} messages selected${state.source === 'demo' ? ' · demo data' : state.source === 'import' ? ' · imported DMs' : ''}</span>
       <span class="spacer"></span>
       <button id="summarise" class="primary" ${selectedCount === 0 || state.summarising ? 'disabled' : ''}>${state.summarising ? '<span class="spinner"></span>Summarising…' : 'Summarise'}</button>
     </div>`;
@@ -119,10 +120,10 @@ function renderInbox(params) {
     html += `<div class="empty"><span class="spinner"></span>Fetching DM threads…</div>`;
   } else if (state.threadsError) {
     html += `<div class="card"><p class="err">${esc(state.threadsError)}</p><p><a href="#/settings">Go to Settings</a> to connect Instagram or enable demo mode.</p></div>`;
-  } else if (!state.status.demo_mode && !state.status.instagram_configured) {
-    html += `<div class="card"><p>Instagram is not connected yet.</p><p><a href="#/settings">Go to Settings</a> to log in with Instagram, paste an access token, or enable demo mode.</p></div>`;
+  } else if (!state.status.demo_mode && !state.status.import_mode && !state.status.instagram_configured) {
+    html += `<div class="card"><p>Instagram is not connected yet.</p><p><a href="#/settings">Go to Settings</a> to log in with Instagram, paste an access token, import DMs, or enable demo mode.</p></div>`;
   } else if (state.threads.length === 0) {
-    html += `<div class="empty">No DM threads with messages in the last 7 days.</div>`;
+    html += `<div class="empty">No DM threads with messages in the last 7 days.${state.source === 'instagram' ? ' If Meta\'s API returns nothing for your account, you can <a href="#/settings">import your DMs</a> instead.' : ''}</div>`;
   } else {
     for (const t of state.threads) {
       const viewerMsgs = t.messages.filter((m) => !m.from_me);
@@ -230,6 +231,7 @@ function renderSource(id) {
 async function renderSettings(params) {
   if (!state.settings) state.settings = await api('/api/settings');
   const s = state.settings;
+  const st = state.status;
   const error = params.get('error');
   const canOAuth = s.ig_app_id && s.ig_app_secret && s.public_base_url;
   view.innerHTML = `
@@ -264,6 +266,27 @@ async function renderSettings(params) {
         <span id="ig-msg" class="count"></span>
       </div>
     </form>
+
+    <div class="card" id="import-card">
+      <h2 style="margin-top:0">Import DMs (no API needed)</h2>
+      <p class="help">Status: ${st.import_mode ? `<span class="ok">using ${st.imported_threads} imported thread${st.imported_threads === 1 ? '' : 's'}</span>` : st.imported_threads ? `${st.imported_threads} thread${st.imported_threads === 1 ? '' : 's'} imported (not active)` : 'nothing imported'}</p>
+      <h3>Option 1 – Instagram data export</h3>
+      <p class="help">Instagram app → Settings → Your activity → <em>Download your information</em> → Download or transfer information → select <em>Messages</em> → format <strong>JSON</strong>. Upload the resulting zip (or a single <code>message_1.json</code>).</p>
+      <label class="field"><span>Your display name as it appears in the export (optional – auto-detected as the participant common to all threads)</span><input id="export-owner" placeholder="Robin Green" /></label>
+      <div class="row">
+        <input type="file" id="export-file" accept=".zip,.json,application/zip,application/json" />
+        <button type="button" id="export-upload" class="primary">Upload export</button>
+        <span id="export-msg" class="count"></span>
+      </div>
+      <h3>Option 2 – Paste messages</h3>
+      <p class="help">One message per line as <code>@username: text</code>; leave a blank line between threads. Lines from <code>@${esc(s.ig_username || 'me')}</code> or <code>me:</code> count as your own replies.</p>
+      <textarea id="paste-text" rows="7" placeholder="@viewer1: Could you do a video on evaluating RAG pipelines?&#10;me: Great idea, noted!&#10;&#10;@viewer2: How do I pitch an AI budget to my board?"></textarea>
+      <div class="row">
+        <button type="button" id="paste-import" class="primary">Import pasted messages</button>
+        <button type="button" id="import-clear" class="danger" ${st.imported_threads ? '' : 'disabled'}>Clear import & go back to Instagram</button>
+        <span id="paste-msg" class="count"></span>
+      </div>
+    </div>
 
     <div class="card">
       <h2 style="margin-top:0">Demo mode</h2>
@@ -302,6 +325,42 @@ async function renderSettings(params) {
     await saveSettings({ demo_mode: e.target.checked });
     state.threads = []; state.selected = new Set(); state.summary = null;
   };
+
+  const afterImport = async (r, msgEl) => {
+    state.threads = []; state.selected = new Set(); state.summary = null;
+    state.settings = null;
+    await loadStatus();
+    showBanner(`Imported ${r.messages} messages in ${r.threads} threads (${r.recent_messages} within the last ${r.days} days). <a href="#/">Open Inbox</a>`, 'ok');
+    render();
+  };
+  document.getElementById('export-upload').onclick = async () => {
+    const msg = document.getElementById('export-msg');
+    const file = document.getElementById('export-file').files[0];
+    if (!file) { msg.innerHTML = '<span class="err">Choose a file first</span>'; return; }
+    msg.innerHTML = '<span class="spinner"></span>Parsing…';
+    try {
+      const res = await fetch('/api/import/export', { method: 'POST', body: file, headers: { 'Content-Type': 'application/octet-stream', 'X-Owner-Name': encodeURIComponent(document.getElementById('export-owner').value.trim()) } });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body?.detail || res.statusText);
+      await afterImport(body, msg);
+    } catch (err) { msg.innerHTML = `<span class="err">${esc(err.message)}</span>`; }
+  };
+  document.getElementById('paste-import').onclick = async () => {
+    const msg = document.getElementById('paste-msg');
+    const text = document.getElementById('paste-text').value;
+    if (!text.trim()) { msg.innerHTML = '<span class="err">Paste some messages first</span>'; return; }
+    msg.innerHTML = '<span class="spinner"></span>Importing…';
+    try {
+      const r = await api('/api/import/text', { method: 'POST', body: JSON.stringify({ text }) });
+      await afterImport(r, msg);
+    } catch (err) { msg.innerHTML = `<span class="err">${esc(err.message)}</span>`; }
+  };
+  document.getElementById('import-clear').onclick = async () => {
+    state.settings = await api('/api/import', { method: 'DELETE' });
+    state.threads = []; state.selected = new Set(); state.summary = null;
+    await loadStatus();
+    render();
+  };
 }
 
 async function saveSettings(update) {
@@ -325,7 +384,7 @@ window.addEventListener('hashchange', async () => {
   if (path === '/settings') state.settings = null;
   if (path === '/' && state.threads.length === 0 && !state.loadingThreads) {
     await loadStatus();
-    if (state.status.demo_mode || state.status.instagram_configured) { await loadThreads(); return; }
+    if (state.status.demo_mode || state.status.import_mode || state.status.instagram_configured) { await loadThreads(); return; }
   }
   render();
 });
@@ -337,7 +396,7 @@ window.addEventListener('hashchange', async () => {
     if (route().path !== '/settings') navigate('#/settings');
   }
   if (route().path === '/' || route().path === '/summary') {
-    const canLoad = state.status.demo_mode || state.status.instagram_configured;
+    const canLoad = state.status.demo_mode || state.status.import_mode || state.status.instagram_configured;
     if (canLoad) await loadThreads();
   }
   render();

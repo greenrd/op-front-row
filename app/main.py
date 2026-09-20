@@ -1,11 +1,13 @@
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
-from . import instagram, llm
+from . import imports, instagram, llm
 from .demo_data import demo_threads
 from .models import SummariseRequest, SummaryResponse, Thread
 from .settings import SettingsUpdate, apply_update, load_settings, save_settings
@@ -36,6 +38,8 @@ def status() -> dict[str, Any]:
         "llm_configured": s.llm_configured(),
         "instagram_configured": s.instagram_configured(),
         "demo_mode": s.demo_mode,
+        "import_mode": s.import_mode,
+        "imported_threads": len(imports.load_imported()),
         "ig_username": s.ig_username,
     }
 
@@ -99,6 +103,9 @@ async def get_threads(days: int = 7) -> dict[str, Any]:
     if s.demo_mode:
         threads = demo_threads()
         source = "demo"
+    elif s.import_mode:
+        threads = imports.within_days(imports.load_imported(), days)
+        source = "import"
     elif s.instagram_configured():
         try:
             threads = await instagram.fetch_threads(s.ig_access_token, days=days)
@@ -106,13 +113,72 @@ async def get_threads(days: int = 7) -> dict[str, Any]:
             raise HTTPException(502, str(e))
         source = "instagram"
     else:
-        raise HTTPException(400, "Instagram is not connected. Connect it in Settings or enable demo mode.")
+        raise HTTPException(400, "Instagram is not connected. Connect it, import DMs, or enable demo mode in Settings.")
     _thread_cache = threads
     return {
         "source": source,
         "days": days,
         "threads": [t.model_dump(mode="json") for t in threads],
     }
+
+
+class TextImport(BaseModel):
+    text: str
+
+
+def _import_result(threads: list[Thread], days: int = 7) -> dict[str, Any]:
+    recent = imports.within_days(threads, days)
+    return {
+        "threads": len(threads),
+        "messages": sum(len(t.messages) for t in threads),
+        "recent_threads": len(recent),
+        "recent_messages": sum(len(t.messages) for t in recent),
+        "days": days,
+    }
+
+
+@app.post("/api/import/export")
+async def import_export(request: Request) -> dict[str, Any]:
+    """Body: raw bytes of an Instagram 'Download your information' zip or message_N.json."""
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "Empty upload.")
+    s = load_settings()
+    try:
+        threads = imports.parse_dyi(data, owner_name=unquote(request.headers.get("x-owner-name", "")))
+    except imports.ImportError_ as e:
+        raise HTTPException(400, str(e))
+    imports.save_imported(threads)
+    s.import_mode = True
+    s.demo_mode = False
+    save_settings(s)
+    _thread_cache.clear()
+    return _import_result(threads)
+
+
+@app.post("/api/import/text")
+def import_text(body: TextImport) -> dict[str, Any]:
+    s = load_settings()
+    try:
+        threads = imports.parse_text(body.text, owner_username=s.ig_username)
+    except imports.ImportError_ as e:
+        raise HTTPException(400, str(e))
+    imports.save_imported(threads)
+    s.import_mode = True
+    s.demo_mode = False
+    save_settings(s)
+    _thread_cache.clear()
+    return _import_result(threads)
+
+
+@app.delete("/api/import")
+def import_clear() -> dict[str, Any]:
+    imports.clear_imported()
+    s = load_settings()
+    s.import_mode = False
+    save_settings(s)
+    _thread_cache.clear()
+    return s.public()
 
 
 @app.post("/api/summarise")
