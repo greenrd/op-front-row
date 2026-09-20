@@ -91,14 +91,21 @@ async def _chat(settings: Settings, system: str, user: str) -> str:
     headers = {"Authorization": f"Bearer {settings.llm_api_key}", "Content-Type": "application/json"}
     body = {
         "model": settings.llm_model,
-        "temperature": 0.2,
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
     }
+    # Progressively drop optional parameters that some endpoints/models reject
+    # (reasoning models only accept the default temperature; some servers lack response_format).
+    variants = [
+        {**body, "temperature": 0.2, "response_format": {"type": "json_object"}},
+        {**body, "response_format": {"type": "json_object"}},
+        {**body, "temperature": 0.2},
+        body,
+    ]
     async with httpx.AsyncClient(timeout=180) as client:
-        resp = await client.post(url, headers=headers, json={**body, "response_format": {"type": "json_object"}})
-        if resp.status_code == 400:
-            # Endpoint may not support response_format; retry without it.
-            resp = await client.post(url, headers=headers, json=body)
+        for payload in variants:
+            resp = await client.post(url, headers=headers, json=payload)
+            if resp.status_code != 400:
+                break
         if resp.status_code >= 400:
             raise LLMError(f"LLM endpoint returned {resp.status_code}: {resp.text[:500]}")
         data = resp.json()
