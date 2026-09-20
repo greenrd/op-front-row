@@ -124,14 +124,20 @@ async def fetch_threads(token: str, days: int = 7) -> list[Thread]:
         my_id = acct.ig_user_id
         token = acct.token
 
+        # Conversations are listed with a small page size and messages fetched per conversation:
+        # Meta rejects large/nested requests with a misleading "reduce the amount of data" error (code 1).
         url: str | None = f"{acct.base}/{acct.node}/conversations"
         params: dict | None = {
             "platform": "instagram",
-            "fields": f"id,updated_time,participants,messages.limit(50){{{MESSAGE_FIELDS}}}",
+            "fields": "id,updated_time,participants{id,username}",
+            "limit": 10,
             "access_token": token,
         }
         while url:
             resp = await client.get(url, params=params)
+            if _is_reduce_data_error(resp) and params is not None:
+                params["limit"] = 2
+                resp = await client.get(url, params=params)
             _raise(resp)
             body = resp.json()
             stop = False
@@ -160,12 +166,7 @@ async def _build_thread(client: httpx.AsyncClient, acct: Account, conv: dict, my
 
     raw_messages = conv.get("messages", {}).get("data")
     if raw_messages is None:
-        resp = await client.get(
-            f"{acct.base}/{conv['id']}",
-            params={"fields": f"messages.limit(50){{{MESSAGE_FIELDS}}}", "access_token": acct.token},
-        )
-        _raise(resp)
-        raw_messages = resp.json().get("messages", {}).get("data", [])
+        raw_messages = await _fetch_messages(client, acct, conv["id"])
 
     messages: list[Message] = []
     for m in raw_messages:
@@ -196,6 +197,52 @@ async def _build_thread(client: httpx.AsyncClient, acct: Account, conv: dict, my
         participant_username=counterpart["username"],
         messages=messages,
     )
+
+
+async def _fetch_messages(client: httpx.AsyncClient, acct: Account, conv_id: str) -> list[dict]:
+    """Messages of one conversation, shrinking the request until Meta accepts it."""
+    attempts = [
+        (f"{acct.base}/{conv_id}/messages", {"fields": MESSAGE_FIELDS, "limit": 20}),
+        (f"{acct.base}/{conv_id}/messages", {"fields": MESSAGE_FIELDS, "limit": 5}),
+        (f"{acct.base}/{conv_id}/messages", {"fields": "id", "limit": 5}),
+    ]
+    resp: httpx.Response | None = None
+    for url, params in attempts:
+        resp = await client.get(url, params={**params, "access_token": acct.token})
+        if resp.status_code == 200:
+            data = resp.json().get("data", [])
+            if params["fields"] == "id":
+                # Only IDs were readable in bulk; hydrate each message individually.
+                out = []
+                for m in data:
+                    r = await client.get(f"{acct.base}/{m['id']}", params={"fields": MESSAGE_FIELDS, "access_token": acct.token})
+                    if r.status_code == 200:
+                        out.append(r.json())
+                return out
+            return data
+        if not _is_reduce_data_error(resp):
+            break
+    assert resp is not None
+    if _is_reduce_data_error(resp):
+        raise InstagramError(
+            "Meta refused to return the messages of a conversation (code 1: \"Please reduce the amount of data\"), "
+            "even for a single message. For Facebook-issued tokens this usually means the token lacks the "
+            "pages_manage_metadata permission or was not issued to a user/system user with the Messaging task on "
+            "the linked Page. Regenerate the token with instagram_basic, instagram_manage_messages, "
+            "pages_manage_metadata, pages_read_engagement and pages_messaging."
+        )
+    _raise(resp)
+    return []
+
+
+def _is_reduce_data_error(resp: httpx.Response) -> bool:
+    if resp.status_code < 400:
+        return False
+    try:
+        err = resp.json().get("error", {})
+    except ValueError:
+        return False
+    return err.get("code") == 1 and "reduce the amount of data" in (err.get("message") or "")
 
 
 def _parse_time(value: str | None) -> datetime | None:
