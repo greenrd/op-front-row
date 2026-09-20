@@ -9,6 +9,7 @@ from .models import Message, Thread
 from .settings import Settings
 
 GRAPH = "https://graph.instagram.com/v21.0"
+FB_GRAPH = "https://graph.facebook.com/v21.0"
 OAUTH_AUTHORIZE = "https://www.instagram.com/oauth/authorize"
 OAUTH_TOKEN = "https://api.instagram.com/oauth/access_token"
 SCOPES = "instagram_business_basic,instagram_business_manage_messages"
@@ -63,23 +64,67 @@ async def exchange_code(settings: Settings, code: str) -> str:
         return resp.json()["access_token"]
 
 
-async def fetch_profile(token: str) -> dict:
-    async with httpx.AsyncClient(timeout=30) as client:
+class Account:
+    """Resolved messaging endpoint for a token.
+
+    Instagram Login tokens (``IGAA…``) talk to graph.instagram.com as ``me``.
+    Facebook Login tokens (``EAA…``) talk to graph.facebook.com via the Facebook Page linked to the IG account.
+    """
+
+    def __init__(self, base: str, node: str, token: str, ig_user_id: str, username: str):
+        self.base = base
+        self.node = node
+        self.token = token
+        self.ig_user_id = ig_user_id
+        self.username = username
+
+
+async def resolve_account(client: httpx.AsyncClient, token: str) -> Account:
+    if token.startswith("IG"):
         resp = await client.get(f"{GRAPH}/me", params={"fields": "user_id,username", "access_token": token})
         _raise(resp)
-        return resp.json()
+        me = resp.json()
+        return Account(GRAPH, "me", token, str(me.get("user_id") or me.get("id") or ""), me.get("username", ""))
+
+    # Facebook-issued token: find a Page with a linked Instagram professional account.
+    page_fields = "id,name,access_token,instagram_business_account{id,username}"
+    resp = await client.get(f"{FB_GRAPH}/me/accounts", params={"fields": page_fields, "access_token": token})
+    pages = resp.json().get("data", []) if resp.status_code == 200 else []
+    if not pages:
+        # Maybe it is already a Page token.
+        resp = await client.get(
+            f"{FB_GRAPH}/me", params={"fields": "id,instagram_business_account{id,username}", "access_token": token}
+        )
+        me = resp.json() if resp.status_code == 200 else {}
+        if "instagram_business_account" in me:
+            pages = [me]
+    linked = [p for p in pages if p.get("instagram_business_account")]
+    if not linked:
+        raise InstagramError(
+            "This is a Facebook token, but no Facebook Page with a linked Instagram professional account is "
+            "accessible to it. Either assign the Page to this user/system user in Meta Business settings, or "
+            "generate an Instagram Login token (starts with IGAA) from 'API setup with Instagram login'."
+        )
+    page = linked[0]
+    ig = page["instagram_business_account"]
+    return Account(FB_GRAPH, page["id"], page.get("access_token") or token, str(ig["id"]), ig.get("username", ""))
+
+
+async def fetch_profile(token: str) -> dict:
+    async with httpx.AsyncClient(timeout=30) as client:
+        acct = await resolve_account(client, token)
+        return {"user_id": acct.ig_user_id, "username": acct.username}
 
 
 async def fetch_threads(token: str, days: int = 7) -> list[Thread]:
     since = datetime.now(timezone.utc) - timedelta(days=days)
     threads: list[Thread] = []
     async with httpx.AsyncClient(timeout=60) as client:
-        me = await client.get(f"{GRAPH}/me", params={"fields": "user_id,username", "access_token": token})
-        _raise(me)
-        me_json = me.json()
-        my_id = str(me_json.get("user_id") or me_json.get("id") or "")
+        acct = await resolve_account(client, token)
+        my_id = acct.ig_user_id
+        token = acct.token
 
-        url: str | None = f"{GRAPH}/me/conversations"
+        url: str | None = f"{acct.base}/{acct.node}/conversations"
         params: dict | None = {
             "platform": "instagram",
             "fields": f"id,updated_time,participants,messages.limit(50){{{MESSAGE_FIELDS}}}",
@@ -95,7 +140,7 @@ async def fetch_threads(token: str, days: int = 7) -> list[Thread]:
                 if updated and updated < since:
                     stop = True
                     continue
-                thread = await _build_thread(client, token, conv, my_id, since)
+                thread = await _build_thread(client, acct, conv, my_id, since)
                 if thread.messages:
                     threads.append(thread)
             next_url = body.get("paging", {}).get("next")
@@ -105,7 +150,7 @@ async def fetch_threads(token: str, days: int = 7) -> list[Thread]:
     return threads
 
 
-async def _build_thread(client: httpx.AsyncClient, token: str, conv: dict, my_id: str, since: datetime) -> Thread:
+async def _build_thread(client: httpx.AsyncClient, acct: Account, conv: dict, my_id: str, since: datetime) -> Thread:
     participants = [
         {"id": str(p.get("id", "")), "username": p.get("username", "")}
         for p in conv.get("participants", {}).get("data", [])
@@ -116,8 +161,8 @@ async def _build_thread(client: httpx.AsyncClient, token: str, conv: dict, my_id
     raw_messages = conv.get("messages", {}).get("data")
     if raw_messages is None:
         resp = await client.get(
-            f"{GRAPH}/{conv['id']}",
-            params={"fields": f"messages.limit(50){{{MESSAGE_FIELDS}}}", "access_token": token},
+            f"{acct.base}/{conv['id']}",
+            params={"fields": f"messages.limit(50){{{MESSAGE_FIELDS}}}", "access_token": acct.token},
         )
         _raise(resp)
         raw_messages = resp.json().get("messages", {}).get("data", [])

@@ -254,7 +254,7 @@ async function renderSettings(params) {
       <label class="field"><span>Instagram App Secret</span><input name="ig_app_secret" type="password" value="${esc(s.ig_app_secret)}" /></label>
       <label class="field"><span>Public base URL of this app (https, e.g. your ngrok URL)</span><input name="public_base_url" placeholder="https://xxxx.ngrok.app" value="${esc(s.public_base_url)}" /></label>
       <h3>Option B – Paste an access token</h3>
-      <p class="help">A user token with <code>instagram_business_basic</code> and <code>instagram_business_manage_messages</code> (e.g. generated in the Meta app dashboard).</p>
+      <p class="help">Preferred: an Instagram Login token (starts with <code>IGAA</code>) from the app dashboard → Instagram → <em>API setup with Instagram login</em> → Generate token, with <code>instagram_business_basic</code> and <code>instagram_business_manage_messages</code>. A Facebook token (starts with <code>EAA</code>, scopes <code>instagram_basic</code>/<code>instagram_manage_messages</code>) also works if it can access a Facebook Page linked to the Instagram account.</p>
       <label class="field"><span>Access token</span><input name="ig_access_token" type="password" value="${esc(s.ig_access_token)}" /></label>
       <div class="row">
         <button class="primary" type="submit">Save Instagram settings</button>
