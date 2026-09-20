@@ -1,5 +1,6 @@
 """Instagram Messaging API client (Instagram API with Instagram Login)."""
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
@@ -124,29 +125,28 @@ async def fetch_threads(token: str, days: int = 7) -> list[Thread]:
         my_id = acct.ig_user_id
         token = acct.token
 
-        # Conversations are listed with a small page size and messages fetched per conversation:
-        # Meta rejects large/nested requests with a misleading "reduce the amount of data" error (code 1).
+        # One request per page with messages nested; if Meta rejects the payload size
+        # (code 1 "reduce the amount of data") fall back to fetching messages per conversation.
         url: str | None = f"{acct.base}/{acct.node}/conversations"
-        params: dict | None = {
-            "platform": "instagram",
-            "fields": "id,updated_time,participants{id,username}",
-            "limit": 10,
-            "access_token": token,
-        }
+        nested_fields = f"id,updated_time,participants{{id,username}},messages.limit(50){{{MESSAGE_FIELDS}}}"
+        flat_fields = "id,updated_time,participants{id,username}"
+        params: dict | None = {"platform": "instagram", "fields": nested_fields, "limit": 50, "access_token": token}
         while url:
             resp = await client.get(url, params=params)
             if _is_reduce_data_error(resp) and params is not None:
-                params["limit"] = 2
+                params.update(fields=flat_fields, limit=10)
                 resp = await client.get(url, params=params)
             _raise(resp)
             body = resp.json()
+            recent = []
             stop = False
             for conv in body.get("data", []):
                 updated = _parse_time(conv.get("updated_time"))
                 if updated and updated < since:
                     stop = True
                     continue
-                thread = await _build_thread(client, acct, conv, my_id, since)
+                recent.append(conv)
+            for thread in await asyncio.gather(*(_build_thread(client, acct, c, my_id, since) for c in recent)):
                 if thread.messages:
                     threads.append(thread)
             next_url = body.get("paging", {}).get("next")
@@ -200,33 +200,16 @@ async def _build_thread(client: httpx.AsyncClient, acct: Account, conv: dict, my
 
 
 async def _fetch_messages(client: httpx.AsyncClient, acct: Account, conv_id: str) -> list[dict]:
-    """Messages of one conversation, shrinking the request until Meta accepts it."""
-    attempts = [
-        (f"{acct.base}/{conv_id}/messages", {"fields": MESSAGE_FIELDS, "limit": 20}),
-        (f"{acct.base}/{conv_id}/messages", {"fields": MESSAGE_FIELDS, "limit": 5}),
-        (f"{acct.base}/{conv_id}/messages", {"fields": "id", "limit": 5}),
-    ]
-    resp: httpx.Response | None = None
-    for url, params in attempts:
-        resp = await client.get(url, params={**params, "access_token": acct.token})
-        if resp.status_code == 200:
-            data = resp.json().get("data", [])
-            if params["fields"] == "id":
-                # Only IDs were readable in bulk; hydrate each message individually.
-                out = []
-                for m in data:
-                    r = await client.get(f"{acct.base}/{m['id']}", params={"fields": MESSAGE_FIELDS, "access_token": acct.token})
-                    if r.status_code == 200:
-                        out.append(r.json())
-                return out
-            return data
-        if not _is_reduce_data_error(resp):
-            break
-    assert resp is not None
+    """Messages of one conversation (fallback when they could not be nested in the conversations call)."""
+    resp = await client.get(
+        f"{acct.base}/{conv_id}/messages", params={"fields": MESSAGE_FIELDS, "limit": 50, "access_token": acct.token}
+    )
+    if resp.status_code == 200:
+        return resp.json().get("data", [])
     if _is_reduce_data_error(resp):
         raise InstagramError(
             "Meta refused to return the messages of a conversation (code 1: \"Please reduce the amount of data\"), "
-            "even for a single message. For Facebook-issued tokens this usually means the token lacks the "
+            "For Facebook-issued tokens this usually means the token lacks the "
             "pages_manage_metadata permission or was not issued to a user/system user with the Messaging task on "
             "the linked Page. Regenerate the token with instagram_basic, instagram_manage_messages, "
             "pages_manage_metadata, pages_read_engagement and pages_messaging."
