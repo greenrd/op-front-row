@@ -16,7 +16,8 @@ Instructions:
 2. Identify each QUESTION (something a viewer wants explained) and each SUGGESTION (a topic or format a viewer
    wants covered).
 3. DEDUPLICATE: if several messages ask essentially the same thing, merge them into ONE item. The item's "count"
-   is the number of distinct messages that express it, and "message_ids" must list ALL of those messages.
+   is the number of DISTINCT VIEWERS (senders) who expressed it - several messages from the same viewer count
+   once. "message_ids" must list ALL messages expressing it, from every viewer.
 4. Every item must cite at least one message id. Only use ids that appear in the input. Never invent ids.
 5. Write "title" as a short, punchy video idea (max 12 words) and "summary" as one or two sentences explaining
    what viewers want to know and why it would make a good video.
@@ -41,11 +42,13 @@ async def summarise(settings: Settings, messages: list[Message]) -> SummaryRespo
         return SummaryResponse(items=[], overview="No viewer messages selected.", messages_considered=0, model=settings.llm_model)
 
     ref_to_id: dict[str, str] = {}
+    id_to_sender: dict[str, str] = {}
     lines = []
     for i, m in enumerate(sorted(viewer_messages, key=lambda x: x.created_time), start=1):
         ref = f"m{i}"
         ref_to_id[ref] = m.id
         sender = m.sender_username or m.sender_id or "viewer"
+        id_to_sender[m.id] = m.sender_id or sender
         text = " ".join(m.text.split())
         lines.append(f"[{ref}] @{sender} ({m.created_time:%Y-%m-%d}): {text}")
 
@@ -71,7 +74,7 @@ async def summarise(settings: Settings, messages: list[Message]) -> SummaryRespo
                 kind="question" if kind.startswith("q") else "suggestion",
                 title=str(it.get("title", "")).strip() or "Untitled idea",
                 summary=str(it.get("summary", "")).strip(),
-                count=max(len(ids), 1),
+                count=max(len({id_to_sender[i] for i in ids}), 1),
                 message_ids=ids,
             )
         )

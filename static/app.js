@@ -201,7 +201,7 @@ function renderSummary() {
     for (const it of s.items) {
       html += `
         <section class="card summary-item">
-          <div class="badge"><span class="num">${it.count}</span><span class="lbl">${it.count === 1 ? 'message' : 'messages'}</span></div>
+          <div class="badge"><span class="num">${it.count}</span><span class="lbl">${it.count === 1 ? 'viewer' : 'viewers'}</span></div>
           <div>
             <h3>${esc(it.title)} <span class="kind ${esc(it.kind)}">${esc(it.kind)}</span></h3>
             <div>${esc(it.summary)}</div>

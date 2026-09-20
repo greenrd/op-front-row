@@ -3,7 +3,7 @@
 A small web app for content creators (business / tech audience). It connects to an Instagram
 Professional account, pulls the DM threads from the last 7 days, lets you tick/untick messages, and
 uses an OpenAI-compatible LLM to identify, deduplicate and summarise the viewers' questions and
-suggestions into video ideas – each with a duplicate count and links back to the original messages.
+suggestions into video ideas – each with a count of distinct viewers who asked for it and links back to the original messages.
 
 ## Run
 
